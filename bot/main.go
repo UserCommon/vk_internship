@@ -25,8 +25,8 @@ func main() {
 
 	defer cancel()
 	dialer := tarantool.NetDialer{
-		// change localhost -> tarantool and mattermost
-		Address:  "localhost:3301",
+		Address: os.Getenv("TARANTOOL_SERVER"),
+		// Address:  "localhost:3301",
 		User: 	  "voting_bot",
 		Password: "123321",
 	}

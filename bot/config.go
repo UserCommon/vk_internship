@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"os"
 
-	_ "github.com/joho/godotenv/autoload"
+	// _ "github.com/joho/godotenv/autoload"
 )
 
 type config struct {

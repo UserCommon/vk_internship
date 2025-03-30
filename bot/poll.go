@@ -117,7 +117,6 @@ func handleVote(app *application, post *model.Post, args []string) {
         return
     }
 
-    // Проверяем, активен ли опрос
     active, ok := tuple[5].(bool)
     if !ok || !active {
         sendMsgToTalkingChannel(app, "❌ This poll is closed", post.Id)
@@ -136,6 +135,7 @@ func handleVote(app *application, post *model.Post, args []string) {
 				key, keyOk := k.(string)
 				
 				var value int
+				// change this shi
 				switch vTyped := v.(type) {
 				case int8:
 						value = int(vTyped)
@@ -186,16 +186,9 @@ func handleVote(app *application, post *model.Post, args []string) {
         return
     }
 
-    // Обновляем результат голосования
-    // ops := tarantool.NewOperations().
-    //     Add(2, []interface{}{choice, 1}).
-    //     Assign(3, []interface{}{post.UserId, choice})
-    //
-
 		options[choice] += 1
 		ops := tarantool.NewOperations().
-				// Add(2, []interface{}{choice, options[choice] + 1}). // Увеличиваем голос
-				Assign(2, options)  // Обновляем количество голосов для выбранного пункта
+				Assign(2, options)  // update votes
 
     updateReq := tarantool.NewUpdateRequest("polls").
         Index("primary").
@@ -266,9 +259,9 @@ func handleClosePoll(app *application, post *model.Post, args []string) {
         return
     }
 
-    // Обновляем поле 'active' на false, чтобы закрыть опрос
+		// Close poll
     ops := tarantool.NewOperations().
-        Assign(5, false)  // Поле 5 - это 'active' (судя по схеме)
+        Assign(5, false)
 
     updateReq := tarantool.NewUpdateRequest("polls").
         Index("primary").
