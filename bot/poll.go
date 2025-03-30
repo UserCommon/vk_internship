@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"math/rand"
-	"strconv"
 
 	"github.com/mattermost/mattermost-server/v6/model"
 	"github.com/tarantool/go-tarantool/v2"
@@ -26,10 +25,21 @@ type Poll struct {
 	CreatedAt uint64
 }
 
-// Function that generates ID
 func generatePollID() string {
-	return strconv.FormatInt(rand.Int63(), 16)
+    // Генерация UUID версии 4
+    uuid := make([]byte, 16)
+    _, err := rand.Read(uuid)
+    if err != nil {
+        panic("Failed to generate UUID")
+    }
+    
+    uuid[6] = (uuid[6] & 0x0f) | 0x40 // Version 4
+    uuid[8] = (uuid[8] & 0x3f) | 0x80 // Variant is 10
+    
+    return fmt.Sprintf("%x-%x-%x-%x-%x", 
+        uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:])
 }
+
 
 func handleCreatePoll(app *application, post *model.Post, args []string) {
     if len(args) < 2 {
@@ -93,20 +103,65 @@ func handleVote(app *application, post *model.Post, args []string) {
         Msg("Vote attempt")
 
     tuple, err := getPoll(app.TarantoolConnection, pollID)
-    if err != nil {
-        sendMsgToTalkingChannel(app, "❌ Poll not found", post.Id)
+		if err != nil {
+        app.logger.Error().
+            Err(err).
+            Str("poll_id", pollID).
+            Msg("Poll lookup failed")
+        
+        // Try to suggest active polls
+        if activePolls, err := getActivePolls(app); err == nil {
+            sendMsgToTalkingChannel(app, 
+                fmt.Sprintf("❌ Poll not found. Active polls:\n%s", activePolls), 
+                post.Id)
+        } else {
+            sendMsgToTalkingChannel(app, "❌ Poll not found", post.Id)
+        }
         return
     }
 
-    if active, ok := tuple[5].(bool); !ok || !active {
+		// 2. Check if poll is active
+    active, ok := tuple[5].(bool)
+    if !ok {
+        app.logger.Error().
+            Interface("active_field", tuple[5]).
+            Msg("Invalid active field type")
+        sendMsgToTalkingChannel(app, "❌ Poll data corrupted", post.Id)
+        return
+    }
+
+    if !active {
         sendMsgToTalkingChannel(app, "❌ This poll is closed", post.Id)
         return
     }
 
+		// 3. Verify the option exists
+    options, ok := tuple[2].(map[interface{}]interface{})
+    if !ok {
+        app.logger.Error().
+            Interface("options_field", tuple[2]).
+            Msg("Invalid options field type")
+        sendMsgToTalkingChannel(app, "❌ Poll data corrupted", post.Id)
+        return
+    }
+
+    if _, exists := options[choice]; !exists {
+        validOptions := make([]string, 0, len(options))
+        for opt := range options {
+            validOptions = append(validOptions, fmt.Sprintf("- %s", opt))
+        }
+        sendMsgToTalkingChannel(app, 
+            fmt.Sprintf("❌ Invalid option. Valid options:\n%s", strings.Join(validOptions, "\n")), 
+            post.Id)
+        return
+    }
+
+		// 4. Prepare update operations
 		ops := tarantool.NewOperations().
 						Add(3, []interface{}{"=", choice, 1}).
 						Assign(4, []interface{}{post.UserId, choice})
 
+		// 5. Execute update
     updateReq := tarantool.NewUpdateRequest("polls").
         Index("primary").
         Key(tarantool.StringKey{pollID}).
@@ -119,7 +174,12 @@ func handleVote(app *application, post *model.Post, args []string) {
         return
     }
 
-    sendMsgToTalkingChannel(app, "✅ Vote recorded!", post.Id)
+		// 6. Confirm success
+    sendMsgToTalkingChannel(app, fmt.Sprintf(
+        "✅ Vote for '%s' recorded! Current results:\n%s", 
+        choice, 
+        formatPollResults(tuple)), 
+        post.Id)
 }
 
 func handleResults(app *application, post *model.Post, args []string) {
@@ -248,6 +308,53 @@ func getPoll(conn *tarantool.Connection, pollID string) ([]interface{}, error) {
     }
 
     return tuple, nil
+}
+
+func getActivePolls(app *application) (string, error) {
+    resp, err := app.TarantoolConnection.Do(
+        tarantool.NewSelectRequest("polls").
+            Index("primary").
+            Iterator(tarantool.IterAll).
+            Limit(10),
+    ).Get()
+
+    if err != nil {
+        return "", fmt.Errorf("failed to fetch polls: %w", err)
+    }
+
+    var activePolls []string
+    for _, item := range resp {
+        tuple, ok := item.([]interface{})
+        if !ok || len(tuple) < 6 {
+            continue
+        }
+
+        if active, ok := tuple[5].(bool); ok && active {
+            id, _ := tuple[0].(string)
+            question, _ := tuple[1].(string)
+            activePolls = append(activePolls, fmt.Sprintf("- %s: %s", id, question))
+        }
+    }
+
+    if len(activePolls) == 0 {
+        return "No active polls available", nil
+    }
+
+    return strings.Join(activePolls, "\n"), nil
+}
+
+func formatPollResults(tuple []interface{}) string {
+    options, ok := tuple[2].(map[interface{}]interface{})
+    if !ok {
+        return "Unable to display results"
+    }
+
+    var results []string
+    for opt, count := range options {
+        results = append(results, fmt.Sprintf("- %s: %v votes", opt, count))
+    }
+
+    return strings.Join(results, "\n")
 }
 
 

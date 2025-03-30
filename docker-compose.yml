@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # Mattermost (мессенджер)
+  mattermost:
+    image: mattermost/mattermost-team-edition:9.4
+    ports:
+      - "8065:8065"
+    environment:
+      - MM_SQLSETTINGS_DATASOURCE=postgres://mmuser:mmuser_password@postgres:5432/mattermost?sslmode=disable
+      - MM_SQLSETTINGS_DRIVERNAME=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - mattermost_data:/mattermost/data
+      - mattermost_config:/mattermost/config
+    networks:
+      - voting_net
+
+  # PostgreSQL (для Mattermost)
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=mmuser
+      - POSTGRES_PASSWORD=mmuser_password
+      - POSTGRES_DB=mattermost
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - voting_net
+
+  tarantool:
+    image: tarantool/tarantool:2.10
+    ports:
+      - "3301:3301"
+    volumes:
+      - tarantool_data:/var/lib/tarantool
+      - ./tarantool:/opt/tarantool
+    command: tarantool /opt/tarantool/init.lua
+    healthcheck:
+      test: ["CMD", "tarantool", "-e", "require('tarantool').ping()"]
+      interval: 5s
+      timeout: 1s
+      retries: 3
+    networks:
+      - voting_net
+
+  # Go-бот
+  # bot:
+  #   build: ./bot
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mattermost:
+  #       condition: service_healthy
+  #     tarantool:
+  #       condition: service_healthy
+  #   environment:
+  #     - MATTERMOST_URL=http://mattermost:8065
+  #     - TARANTOOL_ADDR=tarantool:3301
+  #     - TARANTOOL_USER=voting_bot
+  #     - TARANTOOL_PASSWORD=123321
+  #   networks:
+  #     - voting_net
+
+volumes:
+  mattermost_data:
+  mattermost_config:
+  postgres_data:
+  tarantool_data:
+
+networks:
+  voting_net:
+    driver: bridge

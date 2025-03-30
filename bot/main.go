@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"time"
 	"strings"
+	"unicode"
+	"bytes"
 
 	"github.com/rs/zerolog"
 	"github.com/mattermost/mattermost-server/v6/model"
@@ -204,4 +206,29 @@ func handlePost(app *application, post *model.Post) {
     }
 }
 
+func parseCommandArgs(input string) []string {
+    var args []string
+    var buffer bytes.Buffer
+    inQuotes := false
 
+    for _, r := range input {
+        switch {
+        case r == '"':
+            inQuotes = !inQuotes
+            buffer.WriteRune(r)
+        case unicode.IsSpace(r) && !inQuotes:
+            if buffer.Len() > 0 {
+                args = append(args, strings.Trim(buffer.String(), "\""))
+                buffer.Reset()
+            }
+        default:
+            buffer.WriteRune(r)
+        }
+    }
+
+    if buffer.Len() > 0 {
+        args = append(args, strings.Trim(buffer.String(), "\""))
+    }
+
+    return args
+}
