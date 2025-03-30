@@ -1,5 +1,6 @@
 package main
 
+
 import (
 	"time"
 	"fmt"
@@ -53,8 +54,10 @@ func handleCreatePoll(app *application, post *model.Post, args []string) {
         options[opt] = 0
     }
 
+		id := generatePollID()
+
     poll := Poll{
-        ID:        generatePollID(),
+        ID:        id,
         Question:  question,
         Options:   options,
         Votes:     make(map[string]string),
@@ -65,7 +68,7 @@ func handleCreatePoll(app *application, post *model.Post, args []string) {
 
     req := tarantool.NewInsertRequest("polls").
 			Tuple([]interface{}{
-				generatePollID(),
+				id,
 				question,
 				options,       // Теперь это map
 				make(map[string]string), // votes
@@ -95,7 +98,6 @@ func handleVote(app *application, post *model.Post, args []string) {
     pollID := args[0]
     choice := strings.Join(args[1:], " ")
 
-		// Log the voting attempt
     app.logger.Info().
         Str("poll_id", pollID).
         Str("user_id", post.UserId).
@@ -103,45 +105,75 @@ func handleVote(app *application, post *model.Post, args []string) {
         Msg("Vote attempt")
 
     tuple, err := getPoll(app.TarantoolConnection, pollID)
-		if err != nil {
-        app.logger.Error().
-            Err(err).
-            Str("poll_id", pollID).
-            Msg("Poll lookup failed")
+		app.logger.Debug().Msgf("Raw options from Tarantool: %+v (type: %T)", tuple[2], tuple[2])
+    if err != nil {
+        app.logger.Error().Err(err).Str("poll_id", pollID).Msg("Poll lookup failed")
         
-        // Try to suggest active polls
         if activePolls, err := getActivePolls(app); err == nil {
-            sendMsgToTalkingChannel(app, 
-                fmt.Sprintf("❌ Poll not found. Active polls:\n%s", activePolls), 
-                post.Id)
+            sendMsgToTalkingChannel(app, fmt.Sprintf("❌ Poll not found. Active polls:\n%s", activePolls), post.Id)
         } else {
             sendMsgToTalkingChannel(app, "❌ Poll not found", post.Id)
         }
         return
     }
 
-		// 2. Check if poll is active
+    // Проверяем, активен ли опрос
     active, ok := tuple[5].(bool)
-    if !ok {
-        app.logger.Error().
-            Interface("active_field", tuple[5]).
-            Msg("Invalid active field type")
-        sendMsgToTalkingChannel(app, "❌ Poll data corrupted", post.Id)
-        return
-    }
-
-    if !active {
+    if !ok || !active {
         sendMsgToTalkingChannel(app, "❌ This poll is closed", post.Id)
         return
     }
 
-		// 3. Verify the option exists
-    options, ok := tuple[2].(map[interface{}]interface{})
-    if !ok {
-        app.logger.Error().
-            Interface("options_field", tuple[2]).
-            Msg("Invalid options field type")
-        sendMsgToTalkingChannel(app, "❌ Poll data corrupted", post.Id)
+		rawOptions, ok := tuple[2].(map[interface{}]interface{})
+		if !ok {
+				app.logger.Error().Msgf("Unexpected format for options: %+v", tuple[2])
+				return
+		}
+
+		options := make(map[string]int)
+
+		for k, v := range rawOptions {
+				key, keyOk := k.(string)
+				
+				var value int
+				switch vTyped := v.(type) {
+				case int8:
+						value = int(vTyped)
+				case int16:
+						value = int(vTyped)
+				case int32:
+						value = int(vTyped)
+				case int64:
+						value = int(vTyped)
+				case uint8:
+						value = int(vTyped)
+				case uint16:
+						value = int(vTyped)
+				case uint32:
+						value = int(vTyped)
+				case uint64:
+						value = int(vTyped)
+				default:
+						app.logger.Error().Msgf("Unexpected type in options: %T", v)
+						continue
+				}
+
+				if keyOk {
+						options[key] = value
+				} else {
+						app.logger.Error().Msgf("Invalid key-value pair in options: %v -> %v", k, v)
+				}
+		}
+
+		app.logger.Debug().Msgf("Raw options from Tarantool: %+v (type: %T)", rawOptions, rawOptions)
+		for k, v := range rawOptions {
+				app.logger.Debug().Msgf("Key: %v (type: %T), Value: %v (type: %T)", k, k, v, v)
+		}
+
+		app.logger.Debug().Interface("parsed_options", options).Msg("Parsed poll options")
+
+    if len(options) == 0 {
+        sendMsgToTalkingChannel(app, "❌ No valid options found in poll", post.Id)
         return
     }
 
@@ -150,18 +182,21 @@ func handleVote(app *application, post *model.Post, args []string) {
         for opt := range options {
             validOptions = append(validOptions, fmt.Sprintf("- %s", opt))
         }
-        sendMsgToTalkingChannel(app, 
-            fmt.Sprintf("❌ Invalid option. Valid options:\n%s", strings.Join(validOptions, "\n")), 
-            post.Id)
+        sendMsgToTalkingChannel(app, fmt.Sprintf("❌ Invalid option. Valid options:\n%s", strings.Join(validOptions, "\n")), post.Id)
         return
     }
 
-		// 4. Prepare update operations
-		ops := tarantool.NewOperations().
-						Add(3, []interface{}{"=", choice, 1}).
-						Assign(4, []interface{}{post.UserId, choice})
+    // Обновляем результат голосования
+    // ops := tarantool.NewOperations().
+    //     Add(2, []interface{}{choice, 1}).
+    //     Assign(3, []interface{}{post.UserId, choice})
+    //
 
-		// 5. Execute update
+		options[choice] += 1
+		ops := tarantool.NewOperations().
+				// Add(2, []interface{}{choice, options[choice] + 1}). // Увеличиваем голос
+				Assign(2, options)  // Обновляем количество голосов для выбранного пункта
+
     updateReq := tarantool.NewUpdateRequest("polls").
         Index("primary").
         Key(tarantool.StringKey{pollID}).
@@ -174,12 +209,7 @@ func handleVote(app *application, post *model.Post, args []string) {
         return
     }
 
-		// 6. Confirm success
-    sendMsgToTalkingChannel(app, fmt.Sprintf(
-        "✅ Vote for '%s' recorded! Current results:\n%s", 
-        choice, 
-        formatPollResults(tuple)), 
-        post.Id)
+    sendMsgToTalkingChannel(app, fmt.Sprintf("✅ Vote for '%s' recorded!", choice), post.Id)
 }
 
 func handleResults(app *application, post *model.Post, args []string) {
@@ -218,7 +248,6 @@ func handleResults(app *application, post *model.Post, args []string) {
     sendMsgToTalkingChannel(app, result.String(), post.Id)
 }
 
-
 func handleClosePoll(app *application, post *model.Post, args []string) {
     if len(args) < 1 {
         sendHelp(app, post.Id)
@@ -237,13 +266,14 @@ func handleClosePoll(app *application, post *model.Post, args []string) {
         return
     }
 
-		ops := tarantool.NewOperations().
-			Assign(6, false)
+    // Обновляем поле 'active' на false, чтобы закрыть опрос
+    ops := tarantool.NewOperations().
+        Assign(5, false)  // Поле 5 - это 'active' (судя по схеме)
 
-		updateReq := tarantool.NewUpdateRequest("polls").
-			Index("primary").
-			Key(tarantool.StringKey{pollID}).
-			Operations(ops)
+    updateReq := tarantool.NewUpdateRequest("polls").
+        Index("primary").
+        Key(tarantool.StringKey{pollID}).
+        Operations(ops)
 
     _, err = app.TarantoolConnection.Do(updateReq).Get()
     if err != nil {
@@ -254,6 +284,7 @@ func handleClosePoll(app *application, post *model.Post, args []string) {
 
     sendMsgToTalkingChannel(app, "✅ Poll closed!", post.Id)
 }
+
 
 func handleDeletePoll(app *application, post *model.Post, args []string) {
     if len(args) < 1 {
