@@ -21,6 +21,7 @@ type Poll struct {
 	Question string
 	Options map[string]int
 	Votes map[string]string
+	// VotedUsers map[string]bool later
 	Creator string
 	Active bool
 	CreatedAt uint64
@@ -61,6 +62,7 @@ func handleCreatePoll(app *application, post *model.Post, args []string) {
         Question:  question,
         Options:   options,
         Votes:     make(map[string]string),
+				// VotedUsers: make(map[string]bool),
         Creator:   post.UserId,
         Active:    true,
         CreatedAt: uint64(time.Now().Unix()),
@@ -68,13 +70,14 @@ func handleCreatePoll(app *application, post *model.Post, args []string) {
 
     req := tarantool.NewInsertRequest("polls").
 			Tuple([]interface{}{
-				id,
-				question,
-				options,       // Теперь это map
-				make(map[string]string), // votes
-				post.UserId,
-				true,
-				time.Now().Unix(),
+				poll.ID,
+				poll.Question,
+				poll.Options,
+				poll.Votes,
+				poll.Creator,
+				poll.Active,
+				poll.CreatedAt,
+				// poll.VotedUsers,
 			})
 
     _, err := app.TarantoolConnection.Do(req).Get()
@@ -88,6 +91,7 @@ func handleCreatePoll(app *application, post *model.Post, args []string) {
         poll.ID, poll.Question, getOptionsList(poll.Options))
     sendMsgToTalkingChannel(app, response, post.Id)
 }
+
 
 func handleVote(app *application, post *model.Post, args []string) {
     if len(args) < 2 {
@@ -104,8 +108,9 @@ func handleVote(app *application, post *model.Post, args []string) {
         Str("choice", choice).
         Msg("Vote attempt")
 
+    // Получаем опрос из базы данных
     tuple, err := getPoll(app.TarantoolConnection, pollID)
-		app.logger.Debug().Msgf("Raw options from Tarantool: %+v (type: %T)", tuple[2], tuple[2])
+    app.logger.Debug().Msgf("Raw options from Tarantool: %+v (type: %T)", tuple[2], tuple[2])
     if err != nil {
         app.logger.Error().Err(err).Str("poll_id", pollID).Msg("Poll lookup failed")
         
@@ -123,54 +128,48 @@ func handleVote(app *application, post *model.Post, args []string) {
         return
     }
 
-		rawOptions, ok := tuple[2].(map[interface{}]interface{})
-		if !ok {
-				app.logger.Error().Msgf("Unexpected format for options: %+v", tuple[2])
-				return
-		}
+    // Получаем список вариантов голосования
+    rawOptions, ok := tuple[2].(map[interface{}]interface{})
+    if !ok {
+        app.logger.Error().Msgf("Unexpected format for options: %+v", tuple[2])
+        return
+    }
 
-		options := make(map[string]int)
+    options := make(map[string]int)
+    for k, v := range rawOptions {
+        key, keyOk := k.(string)
+        
+        var value int
+        switch vTyped := v.(type) {
+        case int8:
+            value = int(vTyped)
+        case int16:
+            value = int(vTyped)
+        case int32:
+            value = int(vTyped)
+        case int64:
+            value = int(vTyped)
+        case uint8:
+            value = int(vTyped)
+        case uint16:
+            value = int(vTyped)
+        case uint32:
+            value = int(vTyped)
+        case uint64:
+            value = int(vTyped)
+        default:
+            app.logger.Error().Msgf("Unexpected type in options: %T", v)
+            continue
+        }
 
-		for k, v := range rawOptions {
-				key, keyOk := k.(string)
-				
-				var value int
-				// change this shi
-				switch vTyped := v.(type) {
-				case int8:
-						value = int(vTyped)
-				case int16:
-						value = int(vTyped)
-				case int32:
-						value = int(vTyped)
-				case int64:
-						value = int(vTyped)
-				case uint8:
-						value = int(vTyped)
-				case uint16:
-						value = int(vTyped)
-				case uint32:
-						value = int(vTyped)
-				case uint64:
-						value = int(vTyped)
-				default:
-						app.logger.Error().Msgf("Unexpected type in options: %T", v)
-						continue
-				}
+        if keyOk {
+            options[key] = value
+        } else {
+            app.logger.Error().Msgf("Invalid key-value pair in options: %v -> %v", k, v)
+        }
+    }
 
-				if keyOk {
-						options[key] = value
-				} else {
-						app.logger.Error().Msgf("Invalid key-value pair in options: %v -> %v", k, v)
-				}
-		}
-
-		app.logger.Debug().Msgf("Raw options from Tarantool: %+v (type: %T)", rawOptions, rawOptions)
-		for k, v := range rawOptions {
-				app.logger.Debug().Msgf("Key: %v (type: %T), Value: %v (type: %T)", k, k, v, v)
-		}
-
-		app.logger.Debug().Interface("parsed_options", options).Msg("Parsed poll options")
+    app.logger.Debug().Interface("parsed_options", options).Msg("Parsed poll options")
 
     if len(options) == 0 {
         sendMsgToTalkingChannel(app, "❌ No valid options found in poll", post.Id)
@@ -186,9 +185,25 @@ func handleVote(app *application, post *model.Post, args []string) {
         return
     }
 
-		options[choice] += 1
-		ops := tarantool.NewOperations().
-				Assign(2, options)  // update votes
+    // Проверяем, не голосовал ли этот пользователь уже
+    // votedUsers, ok := tuple[7].(map[interface{}]interface{})
+    // if !ok {
+    //     app.logger.Error().Msg("Failed to parse voted_users map")
+    //     return
+    // }
+    //
+    // if _, userVoted := votedUsers[post.UserId]; userVoted {
+    //     sendMsgToTalkingChannel(app, "❌ You have already voted in this poll!", post.Id)
+    //     return
+    // }
+
+    // Обновляем счетчик голосов для выбранного варианта
+    options[choice] += 1
+
+    // Запрашиваем обновление данных в базе
+    ops := tarantool.NewOperations().
+        Assign(2, options)         // обновляем голоса
+        // Assign(6, votedUsers)       // обновляем список проголосовавших
 
     updateReq := tarantool.NewUpdateRequest("polls").
         Index("primary").

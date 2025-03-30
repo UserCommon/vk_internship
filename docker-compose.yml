@@ -12,12 +12,12 @@ services:
     depends_on:
       - postgres
     volumes:
-      - mattermost_data:/mattermost/data
-      - mattermost_config:/mattermost/config
+      - ./mattermost_data:/mattermost/data
+      - ./mattermost_config:/mattermost/config
+      - ./mattermost_sessions:/mattermost/sessions
     networks:
       - voting_net
-
-  # PostgreSQL (для Mattermost)
+# PostgreSQL (для Mattermost)
   postgres:
     image: postgres:13
     environment:
@@ -25,7 +25,7 @@ services:
       - POSTGRES_PASSWORD=mmuser_password
       - POSTGRES_DB=mattermost
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mmuser"]
       interval: 5s
@@ -65,9 +65,6 @@ services:
       - voting_net
 
 volumes:
-  mattermost_data:
-  mattermost_config:
-  postgres_data:
   tarantool_data:
 
 networks:

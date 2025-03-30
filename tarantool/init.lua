@@ -17,7 +17,8 @@ box.schema.create_space('polls', {
         {name = 'votes', type = 'map'},
         {name = 'creator', type = 'string'},
         {name = 'active', type = 'boolean'},
-        {name = 'created_at', type = 'number'}
+        {name = 'created_at', type = 'number'},
+        --{name = 'voted_users', type = 'map'}
     }
 })
 
