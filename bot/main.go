@@ -1,24 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
-	"encoding/json"
-	"time"
 	"strings"
+	"time"
 	"unicode"
-	"bytes"
 
-	"github.com/rs/zerolog"
 	"github.com/mattermost/mattermost-server/v6/model"
+	"github.com/rs/zerolog"
 	"github.com/tarantool/go-tarantool/v2"
 	_ "github.com/tarantool/go-tarantool/v2/datetime"
 	_ "github.com/tarantool/go-tarantool/v2/decimal"
 	_ "github.com/tarantool/go-tarantool/v2/uuid"
 )
-
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -27,7 +26,7 @@ func main() {
 	dialer := tarantool.NetDialer{
 		Address: os.Getenv("TARANTOOL_SERVER"),
 		// Address:  "localhost:3301",
-		User: 	  "voting_bot",
+		User:     "voting_bot",
 		Password: "123321",
 	}
 	opts := tarantool.Opts{
@@ -179,56 +178,56 @@ func handleWebSocketEvent(app *application, event *model.WebSocketEvent) {
 }
 
 func handlePost(app *application, post *model.Post) {
-    app.logger.Debug().Str("message", post.Message).Msg("")
-		app.logger.Debug().Interface("post", post).Msg("")
+	app.logger.Debug().Str("message", post.Message).Msg("")
+	app.logger.Debug().Interface("post", post).Msg("")
 
-    if strings.HasPrefix(post.Message, "/vote") {
-        args := strings.Fields(post.Message)
-        if len(args) < 2 {
-            sendHelp(app, post.Id)
-            return
-        }
+	if strings.HasPrefix(post.Message, "/vote") {
+		args := strings.Fields(post.Message)
+		if len(args) < 2 {
+			sendHelp(app, post.Id)
+			return
+		}
 
-        switch args[1] {
-        case "create":
-            handleCreatePoll(app, post, args[2:])
-        case "vote":
-            handleVote(app, post, args[2:])
-        case "results":
-            handleResults(app, post, args[2:])
-        case "close":
-            handleClosePoll(app, post, args[2:])
-        case "delete":
-            handleDeletePoll(app, post, args[2:])
-        default:
-            sendHelp(app, post.Id)
-        }
-    }
+		switch args[1] {
+		case "create":
+			handleCreatePoll(app, post, args[2:])
+		case "vote":
+			handleVote(app, post, args[2:])
+		case "results":
+			handleResults(app, post, args[2:])
+		case "close":
+			handleClosePoll(app, post, args[2:])
+		case "delete":
+			handleDeletePoll(app, post, args[2:])
+		default:
+			sendHelp(app, post.Id)
+		}
+	}
 }
 
 func parseCommandArgs(input string) []string {
-    var args []string
-    var buffer bytes.Buffer
-    inQuotes := false
+	var args []string
+	var buffer bytes.Buffer
+	inQuotes := false
 
-    for _, r := range input {
-        switch {
-        case r == '"':
-            inQuotes = !inQuotes
-            buffer.WriteRune(r)
-        case unicode.IsSpace(r) && !inQuotes:
-            if buffer.Len() > 0 {
-                args = append(args, strings.Trim(buffer.String(), "\""))
-                buffer.Reset()
-            }
-        default:
-            buffer.WriteRune(r)
-        }
-    }
+	for _, r := range input {
+		switch {
+		case r == '"':
+			inQuotes = !inQuotes
+			buffer.WriteRune(r)
+		case unicode.IsSpace(r) && !inQuotes:
+			if buffer.Len() > 0 {
+				args = append(args, strings.Trim(buffer.String(), "\""))
+				buffer.Reset()
+			}
+		default:
+			buffer.WriteRune(r)
+		}
+	}
 
-    if buffer.Len() > 0 {
-        args = append(args, strings.Trim(buffer.String(), "\""))
-    }
+	if buffer.Len() > 0 {
+		args = append(args, strings.Trim(buffer.String(), "\""))
+	}
 
-    return args
+	return args
 }

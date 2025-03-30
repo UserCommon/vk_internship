@@ -50,7 +50,6 @@ services:
     networks:
       - voting_net
 
-  # Go-бот
   bot:
     build: ./bot
     restart: unless-stopped
